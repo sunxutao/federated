@@ -27,3 +27,22 @@ py_library(
     name = "graph_keys",
     srcs = ["graph_keys.py"],
 )
+
+py_library(
+    name = "graph_merge",
+    srcs = ["graph_merge.py"],
+    deps = [
+        "//third_party/py/six",
+        "//third_party/py/tensorflow",
+    ],
+)
+
+py_test(
+    name = "graph_merge_test",
+    srcs = ["graph_merge_test.py"],
+    deps = [
+        ":graph_merge",
+        "//tensorflow_federated/python/common_libs:test",
+        "//third_party/py/tensorflow",
+    ],
+)
