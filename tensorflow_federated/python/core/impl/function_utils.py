@@ -25,6 +25,7 @@ import six
 from six.moves import range
 
 from tensorflow.python.framework import function
+from tensorflow.python.util import tf_inspect
 from tensorflow_federated.python.common_libs import anonymous_tuple
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.core.api import computation_base
@@ -61,7 +62,9 @@ def is_defun(fn):
           # upstreaming some helper library or extending the public interface.
           function._DefinedFunction,  # pylint: disable=protected-access
           function._OverloadedFunction  # pylint: disable=protected-access
-      ))
+      )) or (
+          # TODO(b/113112885): Add (cleaner) support for tf.Function and
+          'def_function.Function' in py_typecheck.type_string(type(fn)))
 
 
 def get_argspec(fn):
@@ -94,9 +97,7 @@ def get_argspec(fn):
     # inside to extract arguments.
     return inspect.getargspec(fn._func)  # pylint: disable=protected-access,deprecated-method
   elif is_defun(fn):
-    raise TypeError(
-        'Support for defuns of type {} has not been implemented yet.'.format(
-            py_typecheck.type_string(type(fn))))
+    return tf_inspect.getargspec(fn)
   else:
     raise TypeError('Expected a Python function or a defun, found {}.'.format(
         py_typecheck.type_string(type(fn))))
@@ -555,13 +556,7 @@ def wrap_as_zero_or_one_arg_callable(fn, parameter_type=None, unpack=None):
           kwargs[name] = element_value
         return fn(*args, **kwargs)
 
-      # Deliberate wrapping to isolate the caller from the underlying function
-      # and the interceptor '_call' again, so those cannot be tampered with,
-      # and to force any parameter bindings to be resolved now.
-      # pylint: disable=unnecessary-lambda,undefined-variable
-      return (lambda fn, at, kt: lambda arg: _unpack_and_call(fn, at, kt, arg))(
-          fn, arg_types, kwarg_types)
-      # pylint: enable=unnecessary-lambda,undefined-variable
+      return lambda arg: _unpack_and_call(fn, arg_types, kwarg_types, arg)
     else:
       # An interceptor function that verifies the actual parameter before it
       # forwards the call as a last-minute check.
@@ -574,12 +569,7 @@ def wrap_as_zero_or_one_arg_callable(fn, parameter_type=None, unpack=None):
           arg = type_utils.convert_to_py_container(arg, parameter_type)
         return fn(arg)
 
-      # Deliberate wrapping to isolate the caller from the underlying function
-      # and the interceptor '_call' again, so those cannot be tampered with,
-      # and to force any parameter bindings to be resolved now.
-      # pylint: disable=unnecessary-lambda,undefined-variable
-      return (lambda fn, pt: lambda arg: _call(fn, pt, arg))(fn, parameter_type)
-      # pylint: enable=unnecessary-lambda,undefined-variable
+      return lambda arg: _call(fn, parameter_type, arg)
 
 
 class ConcreteFunction(computation_base.Computation):
