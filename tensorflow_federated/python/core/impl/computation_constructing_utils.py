@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import six
+from six.moves import range
 
 from tensorflow_federated.python.common_libs import anonymous_tuple
 from tensorflow_federated.python.common_libs import py_typecheck
@@ -314,6 +315,79 @@ def construct_federated_getitem_comp(comp, key):
   return apply_lambda
 
 
+def create_computation_appending(comp1, comp2):
+  r"""Returns a block appending `comp2` to `comp1`.
+
+                       Block
+                      /     \
+  [result=Comp(comp1)]       Tuple
+                             |
+                             [Sel(0), ...,   Sel(n), Comp(comp2)]
+                                    \              \
+                                     Ref(result)    Ref(result)
+
+  Args:
+    comp1: A `computation_building_blocks.ComputationBuildingBlock` the with a
+      `type_signature` of type `computation_type.NamedTupleType`.
+    comp2: A `computation_building_blocks.ComputationBuildingBlock` or a named
+      computation representable as an element of an AnonymousTuple.
+
+  Returns:
+    A `computation_building_blocks.Block`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+  """
+  py_typecheck.check_type(comp1,
+                          computation_building_blocks.ComputationBuildingBlock)
+  type_signatures = anonymous_tuple.to_elements(comp1.type_signature)
+  ref_type = [e for _, e in type_signatures]
+  ref = computation_building_blocks.Reference('result', ref_type)
+  symbols = ((ref.name, comp1),)
+  elements = []
+  for index, (name, _) in enumerate(type_signatures):
+    sel = computation_building_blocks.Selection(ref, index=index)
+    elements.append((name, sel))
+  elements.append(comp2)
+  tup = computation_building_blocks.Tuple(elements)
+  return computation_building_blocks.Block(symbols, tup)
+
+
+def create_federated_apply(fn, arg):
+  r"""Creates a called federated apply.
+
+            Call
+           /    \
+  Intrinsic      Tuple
+                 |
+                 [Comp, Comp]
+
+  Args:
+    fn: A `computation_building_blocks.ComputationBuildingBlock` to use as the
+      function.
+    arg: A `computation_building_blocks.ComputationBuildingBlock` to use as the
+      argument.
+
+  Returns:
+    A `computation_building_blocks.Call`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+  """
+  py_typecheck.check_type(fn,
+                          computation_building_blocks.ComputationBuildingBlock)
+  py_typecheck.check_type(arg,
+                          computation_building_blocks.ComputationBuildingBlock)
+  result_type = computation_types.FederatedType(fn.type_signature.result,
+                                                placement_literals.SERVER, True)
+  intrinsic_type = computation_types.FunctionType(
+      (fn.type_signature, arg.type_signature), result_type)
+  intrinsic = computation_building_blocks.Intrinsic(
+      intrinsic_defs.FEDERATED_APPLY.uri, intrinsic_type)
+  tup = computation_building_blocks.Tuple((fn, arg))
+  return computation_building_blocks.Call(intrinsic, tup)
+
+
 def create_federated_map(fn, arg):
   r"""Creates a called federated map.
 
@@ -352,4 +426,125 @@ def create_federated_map(fn, arg):
   intrinsic = computation_building_blocks.Intrinsic(
       intrinsic_defs.FEDERATED_MAP.uri, intrinsic_type)
   tup = computation_building_blocks.Tuple((fn, arg))
+  return computation_building_blocks.Call(intrinsic, tup)
+
+
+def create_federated_zip(value):
+  r"""Creates a called federated zip.
+
+            Call
+           /    \
+  Intrinsic      Tuple
+                 |
+                 [Comp, Comp]
+
+  Args:
+    value: A `computation_building_blocks.ComputationBuildingBlock` to use as
+      the value.
+
+  Returns:
+    A `computation_building_blocks.Call`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+    ValueError: If `value` is an empty `computation_building_blocks.Tuple`.
+  """
+  py_typecheck.check_type(value,
+                          computation_building_blocks.ComputationBuildingBlock)
+  elements = anonymous_tuple.to_elements(value.type_signature)
+  length = len(elements)
+  if length == 0:
+    raise ValueError('federated_zip is only supported on nonempty tuples.')
+
+  _, first_type_signature = elements[0]
+  if first_type_signature.placement == placement_literals.CLIENTS:
+    map_fn = create_federated_map
+  elif first_type_signature.placement == placement_literals.SERVER:
+    map_fn = create_federated_apply
+
+  if length == 1:
+    name, type_signature = elements[0]
+    ref = computation_building_blocks.Reference('arg', type_signature.member)
+    tup = computation_building_blocks.Tuple(((name, ref),))
+    fn = computation_building_blocks.Lambda(ref.name, ref.type_signature, tup)
+    sel = computation_building_blocks.Selection(value, index=0)
+    return map_fn(fn, sel)
+  else:
+    type_signatures = anonymous_tuple.to_elements(value.type_signature)
+
+    def _zip_args(arg1, arg2):
+      tup = computation_building_blocks.Tuple((arg1, arg2))
+      return _create_federated_zip_two_tuple(tup)
+
+    sel_0 = computation_building_blocks.Selection(value, index=0)
+    sel_1 = computation_building_blocks.Selection(value, index=1)
+    arg = _zip_args(sel_0, sel_1)
+
+    def _append_zipped_args(fn, type_spec):
+      """Internal function to append zipped computations."""
+      ref_type = computation_types.NamedTupleType((
+          fn.type_signature.parameter,
+          (type_spec[0], type_spec[1].member),
+      ))
+      ref = computation_building_blocks.Reference('arg', ref_type)
+      sel_0 = computation_building_blocks.Selection(ref, index=0)
+      call = computation_building_blocks.Call(fn, sel_0)
+      sel_1 = computation_building_blocks.Selection(ref, index=1)
+      result = create_computation_appending(call, (type_spec[0], sel_1))
+      return computation_building_blocks.Lambda(ref.name, ref.type_signature,
+                                                result)
+
+    ref_type = computation_types.NamedTupleType((
+        (type_signatures[0][0], type_signatures[0][1].member),
+        (type_signatures[1][0], type_signatures[1][1].member),
+    ))
+    ref = computation_building_blocks.Reference('arg', ref_type)
+    fn = computation_building_blocks.Lambda(ref.name, ref.type_signature, ref)
+    for k in range(2, len(type_signatures)):
+      sel = computation_building_blocks.Selection(value, index=k)
+      arg = _zip_args(arg, sel)
+      fn = _append_zipped_args(fn, type_signatures[k])
+    return map_fn(fn, arg)
+
+
+def _create_federated_zip_two_tuple(tup):
+  r"""Creates a called federated zip of a 2-tuple.
+
+              Call
+             /    \
+    Intrinsic      Comp(tup)
+
+  Args:
+    tup: A `computation_building_blocks.Tuple` to use as the value.
+
+  Returns:
+    A `computation_building_blocks.Call`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+    ValueError: If `tup` is not a 2-tuple.
+  """
+  py_typecheck.check_type(tup, computation_building_blocks.Tuple)
+  if len(tup) != 2:
+    raise ValueError('Expected a 2-tuple, got an {}-tuple.'.format(len(tup)))
+  placement = tup[0].type_signature.placement
+  if placement is placement_literals.CLIENTS:
+    uri = intrinsic_defs.FEDERATED_ZIP_AT_CLIENTS.uri
+    all_equal = False
+  elif placement is placement_literals.SERVER:
+    uri = intrinsic_defs.FEDERATED_ZIP_AT_SERVER.uri
+    all_equal = True
+  else:
+    raise TypeError('Unsupported placement {}.'.format(str(placement)))
+  elements = []
+  type_signatures = anonymous_tuple.to_elements(tup.type_signature)
+  for name, type_spec in type_signatures:
+    federated_type = computation_types.FederatedType(type_spec.member,
+                                                     placement, all_equal)
+    elements.append((name, federated_type))
+  parameter_type = computation_types.NamedTupleType(elements)
+  result_type = computation_types.FederatedType(
+      [(n, e.member) for n, e in type_signatures], placement, all_equal)
+  intrinsic_type = computation_types.FunctionType(parameter_type, result_type)
+  intrinsic = computation_building_blocks.Intrinsic(uri, intrinsic_type)
   return computation_building_blocks.Call(intrinsic, tup)
