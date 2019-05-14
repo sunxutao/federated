@@ -187,3 +187,22 @@ def is_name_value_pair(element):
   """
   return (isinstance(element, collections.Sequence) and len(element) == 2 and
           isinstance(element[0], six.string_types))
+
+
+def is_named_tuple_element(element, value_type=None):
+  """Tests if `element` is a named tuple element.
+
+  In TFF a named tuple element is a `tuple` or `list` of two elements, a `name`
+  (or `None`) and a `value`.
+
+  Args:
+    element: The Python object to test.
+    value_type: Optional, either a Python type, or a tuple of Python types; the
+      same as what's accepted by isinstance.
+
+  Returns:
+    `True` if `element` is a named tuple element, otherwise `False`.
+  """
+  return (isinstance(element, (tuple, list)) and len(element) == 2 and
+          (element[0] is None or isinstance(element[0], six.string_types)) and
+          (value_type is None or isinstance(element[1], value_type)))

@@ -131,6 +131,21 @@ class PyTypeCheckTest(absltest.TestCase):
     self.assertFalse(py_typecheck.is_attrs(TestClass))
     self.assertFalse(py_typecheck.is_attrs(TestClass()))
 
+  def test_is_named_tuple_element(self):
+    self.assertTrue(py_typecheck.is_named_tuple_element(['a', 1]))
+    self.assertTrue(py_typecheck.is_named_tuple_element(['a', [1, 2]]))
+    self.assertTrue(py_typecheck.is_named_tuple_element(('a', 1)))
+    self.assertTrue(py_typecheck.is_named_tuple_element(('a', [1, 2])))
+    self.assertTrue(py_typecheck.is_named_tuple_element((None, 1)))
+    self.assertTrue(py_typecheck.is_named_tuple_element((None, [1, 2])))
+    self.assertFalse(py_typecheck.is_named_tuple_element([0, 'a']))
+    self.assertFalse(py_typecheck.is_named_tuple_element((0, 'a')))
+    self.assertFalse(py_typecheck.is_named_tuple_element('a'))
+    self.assertFalse(py_typecheck.is_named_tuple_element('abc'))
+    self.assertFalse(py_typecheck.is_named_tuple_element(['abc']))
+    self.assertFalse(py_typecheck.is_named_tuple_element(('abc')))
+    self.assertFalse(py_typecheck.is_named_tuple_element({'a': 1}))
+
 
 if __name__ == '__main__':
   absltest.main()
